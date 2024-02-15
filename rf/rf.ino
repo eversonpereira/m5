@@ -1,84 +1,84 @@
-#include <M5StickCPlus.h>
-#include <ELECHOUSE_CC1101_SRC_DRV.h>
+#include <M5StickCPlus2.h>
 
-#define FREQUENCY 433  // Frequência de 433MHz
+#define RECEPTOR_PIN 26
+#define TRANSMISSOR_PIN 0
 
-enum MenuState { MENU_READ, MENU_REPLAY };
-MenuState menuState = MENU_READ; // Estado inicial do menu
+struct SignalEvent {
+    unsigned long time;
+    bool state;
+};
 
-bool isCapturing = false; // Estado de captura
-byte receivedData[255]; // Buffer para armazenar dados recebidos
-byte dataLength = 0;    // Tamanho dos dados recebidos
+const int maxEvents = 10000;
+events = new (std::nothrow) SignalEvent[maxEvents];
+volatile int eventIndex = 0;
+bool capturing = false;
+bool readyToRepeat = false;
 
-void setup() {
-  M5.begin();
-  M5.Lcd.setRotation(3);
-
-  ELECHOUSE_cc1101.Init(); // Inicializa o CC1101
-  ELECHOUSE_cc1101.setMHZ(FREQUENCY); // Define a frequência
-  ELECHOUSE_cc1101.SetRx(); // Coloca o CC1101 em modo de recepção
-  
-  drawMenu();
+void IRAM_ATTR onSignalChange() {
+    if (capturing && eventIndex < maxEvents) {
+        events[eventIndex++] = {micros(), digitalRead(RECEPTOR_PIN)};
+    }
 }
 
-void drawMenu() {
-  M5.Lcd.fillScreen(BLACK);
-  M5.Lcd.setCursor(0, 0);
-  
-  if (menuState == MENU_READ) {
-    M5.Lcd.println("Ler");
-  } else {
-    M5.Lcd.println("Replay");
-  }
+void startCapture() {
+    capturing = true;
+    eventIndex = 0;
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setCursor(0, 0);
+    M5.Lcd.println("Capturando...");
+    attachInterrupt(RECEPTOR_PIN, onSignalChange, CHANGE);
+}
+
+void stopCapture() {
+    capturing = false;
+    detachInterrupt(RECEPTOR_PIN);
+    readyToRepeat = true;
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setCursor(0, 0);
+    M5.Lcd.println("Captura Concluida.");
+}
+
+void repeatSignal() {
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setCursor(0, 0);
+    M5.Lcd.println("Repetindo...");
+    if (eventIndex > 0) { // Garante que há eventos para repetir
+        unsigned long lastTime = events[0].time;
+        for (int i = 0; i < eventIndex; i++) {
+            unsigned long currentTime = events[i].time;
+            unsigned long duration = i == 0 ? 0 : currentTime - lastTime; // Calcula a diferença de tempo desde o último evento
+            delayMicroseconds(duration); // Espera a duração calculada
+            digitalWrite(TRANSMISSOR_PIN, events[i].state ? HIGH : LOW); // Define o estado do pino
+            lastTime = currentTime; // Atualiza o último tempo registrado
+        }
+    }
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setCursor(0, 0);
+    M5.Lcd.println("Repeticao Concluida.");
+}
+
+
+void setup() {
+    M5.begin();
+    pinMode(TRANSMISSOR_PIN, OUTPUT);
+    pinMode(RECEPTOR_PIN, INPUT);
+    M5.Lcd.fillScreen(BLACK);
+    M5.Lcd.setCursor(0, 0);
+    M5.Lcd.setTextSize(2);
+    M5.Lcd.println("Pronto.");
 }
 
 void loop() {
-  M5.update();
-
-  // Navegação no menu
-  if (M5.BtnA.wasPressed()) {
-    menuState = MenuState((menuState + 1) % 2); // Alternar entre MENU_READ e MENU_REPLAY
-    drawMenu();
-  }
-
-  // Seleção no menu
-  if (M5.BtnB.wasPressed()) {
-    if (menuState == MENU_READ) {
-      if (!isCapturing) {
-        // Iniciar captura
-        isCapturing = true;
-        dataLength = 0;
-        M5.Lcd.fillScreen(BLACK);
-        M5.Lcd.setCursor(0, 0);
-        M5.Lcd.println("Capturando...");
-      } else {
-        // Parar captura
-        isCapturing = false;
-        M5.Lcd.fillScreen(BLACK);
-        M5.Lcd.setCursor(0, 0);
-        M5.Lcd.println("Captura Parada.");
-      }
-    } else if (menuState == MENU_REPLAY) {
-      // Reproduzir dados capturados
-      if (dataLength > 0) {
-        ELECHOUSE_cc1101.SetTx();
-        ELECHOUSE_cc1101.SendData(receivedData, dataLength);
-        ELECHOUSE_cc1101.SetRx(); // Retorna ao modo de recepção após enviar
-        M5.Lcd.fillScreen(BLACK);
-        M5.Lcd.setCursor(0, 0);
-        M5.Lcd.println("Replay Enviado!");
-      }
+    M5.update();
+    if (M5.BtnA.wasPressed()) {
+        if (!capturing) {
+            startCapture();
+        } else {
+            stopCapture();
+        }
     }
-  }
-
-  // Captura de dados
-  if (isCapturing && ELECHOUSE_cc1101.CheckRxFifo() > 0) {
-    dataLength = ELECHOUSE_cc1101.ReceiveData(receivedData);
-    if (dataLength > 0) {
-      isCapturing = false; // Parar captura após receber dados
-      M5.Lcd.fillScreen(BLACK);
-      M5.Lcd.setCursor(0, 0);
-      M5.Lcd.println("Dados Recebidos!");
+    if (M5.BtnB.wasPressed() && readyToRepeat) {
+        repeatSignal();
+        readyToRepeat = false;
     }
-  }
 }
